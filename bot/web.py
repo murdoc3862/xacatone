@@ -15,6 +15,8 @@ from aiohttp import web
 from . import db, monitor
 from .config import Config
 
+WEBHOOK_PATH = "/tg/webhook"
+
 STYLE = """
 <style>
 :root{--bg:#f6f7f9;--card:#fff;--text:#1d2330;--muted:#6b7280;--line:#e5e7eb;--ok:#15803d;--bad:#b91c1c;--accent:#2563eb}
@@ -74,7 +76,7 @@ def make_auth(cfg: Config):
 
     @web.middleware
     async def auth(request: web.Request, handler):
-        if request.path in ("/health",):
+        if request.path in ("/health", WEBHOOK_PATH):
             return await handler(request)
         got = request.headers.get("Authorization", "")
         if not hmac.compare_digest(got.encode(), expected.encode()):

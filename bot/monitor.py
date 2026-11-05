@@ -17,6 +17,9 @@ PING_INTERVAL = 60  # секунд
 state: dict[str, Any] = {
     "started_at": time.time(),
     "polling": False,
+    "mode": "polling",          # polling | webhook
+    "webhook_url": None,
+    "webhook_info": None,
     "bot_username": None,
     "last_update_at": None,
     "last_ping_at": None,
@@ -46,6 +49,8 @@ async def ping_loop(bot: Bot) -> None:
         try:
             me = await bot.get_me()
             state.update(bot_username=me.username, last_ping_ok=True, last_ping_error=None)
+            if state["mode"] == "webhook":
+                state["webhook_info"] = await bot.get_webhook_info()
         except Exception as e:  # noqa: BLE001
             state.update(last_ping_ok=False, last_ping_error=f"{type(e).__name__}: {e}")
             log.warning("Telegram недоступен: %s", e)
@@ -71,9 +76,23 @@ def checks() -> list[dict]:
     else:
         tg_msg = state["last_ping_error"] or "давно не было проверки"
 
+    if state["mode"] == "webhook":
+        info = state["webhook_info"]
+        if info is None:
+            recv_ok, recv_msg = False, "webhook ещё не проверен"
+        elif info.url != state["webhook_url"]:
+            recv_ok, recv_msg = False, f"в Telegram указан другой адрес: {info.url or 'пусто'}"
+        elif info.last_error_date and now - info.last_error_date.timestamp() < 600:
+            recv_ok, recv_msg = False, f"Telegram не может достучаться: {info.last_error_message}"
+        else:
+            recv_ok = True
+            recv_msg = f"webhook {info.url}, в очереди {info.pending_update_count}"
+    else:
+        recv_ok = state["polling"]
+        recv_msg = "polling работает" if recv_ok else "polling остановлен"
+
     return [
-        {"name": "Бот запущен (получает сообщения)", "ok": state["polling"],
-         "msg": "polling работает" if state["polling"] else "polling остановлен"},
+        {"name": "Бот получает сообщения", "ok": recv_ok, "msg": recv_msg},
         {"name": "Связь с Telegram", "ok": tg_ok, "msg": tg_msg},
         {"name": "База данных", "ok": db_ok, "msg": db_msg},
     ]

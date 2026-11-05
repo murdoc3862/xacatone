@@ -16,6 +16,8 @@ class Config:
     admin_password: str
     host: str
     port: int
+    domain: str          # если задан — бот работает через webhook на https://<domain>
+    webhook_secret: str
 
 
 def load() -> Config:
@@ -31,4 +33,6 @@ def load() -> Config:
         admin_password=password,
         host=os.getenv("WEB_HOST", "127.0.0.1").strip(),
         port=int(os.getenv("WEB_PORT", "8080")),
+        domain=os.getenv("DOMAIN", "").strip(),
+        webhook_secret=os.getenv("WEBHOOK_SECRET", "").strip(),
     )
