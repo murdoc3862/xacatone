@@ -25,7 +25,7 @@ async def main() -> None:
     dp.update.outer_middleware(monitor.UpdateMiddleware())
     dp.errors.register(monitor.on_error)
     dp.include_router(handlers.router)
-    app = web.create_app(cfg)
+    app = web.create_app(cfg, bot)
 
     if cfg.domain:
         url = f"https://{cfg.domain}{web.WEBHOOK_PATH}"

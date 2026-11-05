@@ -5,11 +5,11 @@
 """
 from __future__ import annotations
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
-from . import db
+from . import db, quiz
 
 router = Router()
 
@@ -34,7 +34,7 @@ async def any_text(message: Message) -> None:
         await message.answer("Нажмите /start, чтобы начать.")
         return
     if user["name"]:
-        await message.answer("Вы уже зарегистрированы. Скоро здесь появятся новые возможности!")
+        await message.answer("Вы зарегистрированы. Когда начнётся тест по истории, я пришлю вопросы сюда.")
         return
 
     name = " ".join(message.text.split())
@@ -43,7 +43,27 @@ async def any_text(message: Message) -> None:
         return
     db.set_name(u.id, name)
     db.log_event(u.id, "registered", name)
-    await message.answer(f"Приятно познакомиться, {name}! Вы зарегистрированы.")
+    await message.answer(f"Приятно познакомиться, {name}! Вы зарегистрированы.\n"
+                         f"Когда начнётся тест по истории, я пришлю вопросы сюда.")
+    run = db.active_run()
+    if run:  # тест уже идёт — подключаем нового участника сразу
+        await quiz.invite(message.bot, run["id"], u.id)
+
+
+@router.callback_query(F.data.startswith("qa:"))
+async def on_answer(cb: CallbackQuery, bot: Bot) -> None:
+    try:
+        _, run_id, q_index, chosen = cb.data.split(":")
+        run_id, q_index, chosen = int(run_id), int(q_index), int(chosen)
+    except ValueError:
+        await cb.answer()
+        return
+    hint, text = await quiz.answer(bot, cb.from_user.id, run_id, q_index, chosen)
+    await cb.answer(hint)
+    if text and cb.message:
+        await cb.message.edit_text(text)
+    elif cb.message and hint == "Этот тест уже завершён":
+        await cb.message.edit_reply_markup(reply_markup=None)
 
 
 @router.message()

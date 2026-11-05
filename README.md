@@ -5,6 +5,7 @@
 ## Что умеет
 - `/start` → бот спрашивает имя → сохраняет пользователя в базу
 - **Админ-панель** https://xacatone.concie.ru/admin (локально `http://127.0.0.1:8080/admin`): все зарегистрированные пользователи, поиск, выгрузка в CSV (Excel)
+- **Тесты** https://xacatone.concie.ru/quizzes: 10 тестов по истории России, запуск/остановка, результаты
 - **Панель состояния** https://xacatone.concie.ru/status: работает ли бот, есть ли связь с Telegram, база, ошибки, последние события
 - `/health`: JSON-проверка для внешнего мониторинга (без пароля)
 
@@ -26,7 +27,9 @@ SSH_KEY=.secrets/claude_deploy bash deploy/deploy.sh root@IP_СЕРВЕРА
 ## Структура
 ```
 bot/__main__.py   запуск: бот + веб-панель в одном процессе
-bot/handlers.py   сценарий регистрации
+bot/handlers.py   регистрация и кнопки ответов
+bot/quiz.py       логика тестов: рассылка, ответы, места
+bot/quizzes.py    вопросы тестов
 bot/db.py         база SQLite (data/bot.db): users, events
 bot/web.py        страницы /admin, /status, /health
 bot/monitor.py    проверки здоровья бота
