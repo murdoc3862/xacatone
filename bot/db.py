@@ -57,6 +57,18 @@ def init() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 
+            CREATE TABLE IF NOT EXISTS messages (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                tg_id      INTEGER NOT NULL,
+                direction  TEXT NOT NULL,              -- in (от подписчика) | out (от админа)
+                text       TEXT,
+                media_type TEXT,                       -- photo, voice, document, sticker...
+                file_id    TEXT,
+                ts         TEXT NOT NULL,
+                is_read    INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(tg_id, id);
+
             CREATE TABLE IF NOT EXISTS quiz_runs (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 quiz_id    INTEGER NOT NULL,
@@ -254,3 +266,40 @@ def list_runs() -> list[sqlite3.Row]:
                      (SELECT COUNT(*) FROM quiz_participants p WHERE p.run_id=r.id AND p.finished_at IS NOT NULL) AS finished,
                      (SELECT AVG(score) FROM quiz_participants p WHERE p.run_id=r.id AND p.current_q>0) AS avg_score
                    FROM quiz_runs r ORDER BY r.id DESC""")
+
+
+# ---------- Переписка ----------
+
+def add_message(tg_id: int, direction: str, text: str | None,
+                media_type: str | None = None, file_id: str | None = None) -> int:
+    with closing(_connect()) as con, con:
+        cur = con.execute(
+            "INSERT INTO messages (tg_id, direction, text, media_type, file_id, ts, is_read) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (tg_id, direction, text, media_type, file_id, now(), int(direction == "out")))
+        return cur.lastrowid
+
+
+def conversations() -> list[sqlite3.Row]:
+    return _all("""SELECT u.*, m.text AS last_text, m.media_type AS last_media, m.direction AS last_dir,
+                          m.ts AS last_ts,
+                          (SELECT COUNT(*) FROM messages x WHERE x.tg_id=u.tg_id AND x.direction='in' AND x.is_read=0) AS unread
+                   FROM users u
+                   JOIN messages m ON m.id = (SELECT MAX(id) FROM messages WHERE tg_id=u.tg_id)
+                   ORDER BY m.id DESC""")
+
+
+def thread(tg_id: int, after_id: int = 0) -> list[sqlite3.Row]:
+    return _all("SELECT * FROM messages WHERE tg_id=? AND id>? ORDER BY id", (tg_id, after_id))
+
+
+def mark_read(tg_id: int) -> None:
+    _exec("UPDATE messages SET is_read=1 WHERE tg_id=? AND direction='in' AND is_read=0", (tg_id,))
+
+
+def unread_total() -> int:
+    return _all("SELECT COUNT(*) FROM messages WHERE direction='in' AND is_read=0")[0][0]
+
+
+def get_message(msg_id: int):
+    rows = _all("SELECT * FROM messages WHERE id=?", (msg_id,))
+    return rows[0] if rows else None

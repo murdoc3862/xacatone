@@ -26,6 +26,19 @@ async def cmd_start(message: Message) -> None:
     await message.answer("Привет! Как вас зовут? Напишите, пожалуйста, ваше имя.")
 
 
+MEDIA_TYPES = ("document", "voice", "video", "audio", "video_note", "animation", "sticker")
+
+
+def media_of(message: Message) -> tuple[str | None, str | None]:
+    if message.photo:
+        return "photo", message.photo[-1].file_id
+    for t in MEDIA_TYPES:
+        obj = getattr(message, t)
+        if obj:
+            return t, obj.file_id
+    return None, None
+
+
 @router.message(F.text)
 async def any_text(message: Message) -> None:
     u = message.from_user
@@ -33,9 +46,9 @@ async def any_text(message: Message) -> None:
     if user is None:
         await message.answer("Нажмите /start, чтобы начать.")
         return
+    db.add_message(u.id, "in", message.text)  # всё, что пишут, видно в панели «Сообщения»
     if user["name"]:
-        await message.answer("Вы зарегистрированы. Когда начнётся тест по истории, я пришлю вопросы сюда.")
-        return
+        return  # переписка: ответ придёт от администратора из панели
 
     name = " ".join(message.text.split())
     if name.startswith("/") or not 2 <= len(name) <= 50:
@@ -68,4 +81,11 @@ async def on_answer(cb: CallbackQuery, bot: Bot) -> None:
 
 @router.message()
 async def not_text(message: Message) -> None:
-    await message.answer("Пожалуйста, отправьте текстовое сообщение.")
+    u = message.from_user
+    user = db.get_user(u.id)
+    if user is None or not user["name"]:
+        await message.answer("Пожалуйста, отправьте текстовое сообщение.")
+        return
+    media_type, file_id = media_of(message)
+    text = message.caption or (message.sticker.emoji if message.sticker else None)
+    db.add_message(u.id, "in", text, media_type or message.content_type, file_id)

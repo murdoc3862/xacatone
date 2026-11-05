@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import base64
+import mimetypes
 import csv
 import hmac
+import json
 import io
 import time
 from datetime import datetime
 from html import escape
 
+from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 from aiohttp import web
 
 from urllib.parse import quote, urlparse
@@ -39,6 +42,15 @@ th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);verti
 h2{font-size:16px;margin:24px 0 10px}a.btn{color:var(--accent)}button{font:inherit;padding:7px 14px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
 button.stop{background:var(--bad);border-color:var(--bad)}button:disabled{opacity:.4;cursor:not-allowed}
 form{display:inline;margin:0}details summary{cursor:pointer;color:var(--muted)}ol{margin:6px 0 0;padding-left:20px}
+.badge{display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:var(--bad);color:#fff;font-size:12px;font-weight:700;text-align:center;margin-left:4px}
+.chat{display:flex;flex-direction:column;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;height:min(60vh,560px);overflow-y:auto}
+.msg{max-width:75%;padding:8px 12px;border-radius:12px;white-space:pre-wrap;word-wrap:break-word}
+.msg.in{align-self:flex-start;background:var(--bg);border:1px solid var(--line)}
+.msg.out{align-self:flex-end;background:var(--accent);color:#fff}
+.msg .t{font-size:11px;opacity:.7;margin-top:3px}.msg img{max-width:260px;border-radius:8px;display:block}
+.msg.out a{color:#fff}.send{display:flex;gap:8px;margin-top:10px}
+.send textarea{flex:1;font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);resize:vertical;min-height:44px}
+tr.unread td{font-weight:600}a.row{color:inherit;text-decoration:none}
 .flash{padding:10px 14px;border-radius:8px;margin-bottom:16px;border:1px solid var(--bad);color:var(--bad)}
 input{padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);width:260px;max-width:100%}
 </style>"""
@@ -46,9 +58,15 @@ input{padding:7px 10px;border:1px solid var(--line);border-radius:8px;background
 
 def page(title: str, active: str, body: str, refresh: int | None = None) -> web.Response:
     meta = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
+    try:
+        unread = db.unread_total()
+    except Exception:  # noqa: BLE001 — страница состояния должна открываться даже при сбое БД
+        unread = 0
+    badge = f'<span class="badge" id="unread">{unread}</span>' if unread else ""
     nav = "".join(
         f'<a href="{href}" class="{"on" if key == active else ""}">{label}</a>'
-        for key, href, label in [("admin", "/admin", "Пользователи"), ("quizzes", "/quizzes", "Тесты"), ("status", "/status", "Состояние бота")]
+        for key, href, label in [("admin", "/admin", "Пользователи"), ("chats", "/chats", "Сообщения" + badge),
+                                 ("quizzes", "/quizzes", "Тесты"), ("status", "/status", "Состояние бота")]
     )
     html = (f'<!doctype html><html lang="ru"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">{meta}'
@@ -103,6 +121,7 @@ async def admin(request: web.Request) -> web.Response:
         uname = f'<a class="btn" href="https://t.me/{escape(u["username"])}" target="_blank">@{escape(u["username"])}</a>' if u["username"] else "<span class='muted'>—</span>"
         tg_name = escape(" ".join(x for x in (u["first_name"], u["last_name"]) if x))
         name = escape(u["name"]) if u["name"] else "<span class='muted'>ещё не ввёл имя</span>"
+        name = f"<a class='btn' href='/chats/{u['tg_id']}' title='Написать'>{name}</a>"
         rows.append(
             f"<tr><td>{i}</td><td><b>{name}</b></td><td>{uname}</td><td>{tg_name}</td>"
             f"<td class='muted'>{u['tg_id']}</td><td>{fmt_totals(totals.get(u['tg_id']))}</td>"
@@ -328,6 +347,128 @@ async def quiz_stop(request: web.Request) -> web.Response:
     raise web.HTTPSeeOther(f"/quizzes/run/{run_id}")
 
 
+MEDIA_LABELS = {"photo": "Фото", "voice": "Голосовое", "video": "Видео", "document": "Файл", "audio": "Аудио",
+                "video_note": "Видеосообщение", "animation": "GIF", "sticker": "Стикер"}
+
+
+def badge_html(n) -> str:
+    return f"<span class='badge'>{n}</span>" if n else ""
+
+
+def preview(text, media) -> str:
+    label = f"[{MEDIA_LABELS.get(media, media)}] " if media else ""
+    t = (text or "").replace("\n", " ")
+    return escape(label + (t[:80] + "…" if len(t) > 80 else t))
+
+
+async def chats_page(request: web.Request) -> web.Response:
+    convs = db.conversations()
+    rows = "".join(
+        f"<tr class='{'unread' if c['unread'] else ''}'>"
+        f"<td><a class='btn' href='/chats/{c['tg_id']}'>{escape(c['name'] or c['first_name'] or str(c['tg_id']))}</a>"
+        f"{(' <span class=muted>@' + escape(c['username']) + '</span>') if c['username'] else ''}</td>"
+        f"<td>{'<span class=muted>Вы: </span>' if c['last_dir'] == 'out' else ''}{preview(c['last_text'], c['last_media'])}</td>"
+        f"<td class='muted'>{c['last_ts']}</td>"
+        f"<td>{badge_html(c['unread'])}</td></tr>"
+        for c in convs) or "<tr><td colspan='4' class='muted'>Сообщений пока нет. Написать первым можно со страницы «Пользователи» — нажмите на имя.</td></tr>"
+    body = f"""<h2 style="margin-top:0">Сообщения от подписчиков</h2>
+    <p class="muted">Всё, что подписчики пишут боту, попадает сюда. Нажмите на имя, чтобы открыть переписку и ответить.</p>
+    <div class="wrap"><table><thead><tr><th>Подписчик</th><th>Последнее сообщение</th><th>Когда</th><th></th></tr></thead>
+    <tbody>{rows}</tbody></table></div>"""
+    return page("Сообщения", "chats", body, refresh=20)
+
+
+def msg_json(m) -> dict:
+    return {"id": m["id"], "dir": m["direction"], "text": m["text"] or "", "ts": m["ts"],
+            "media": m["media_type"], "media_label": MEDIA_LABELS.get(m["media_type"], m["media_type"]),
+            "file": bool(m["file_id"])}
+
+
+async def chat_page(request: web.Request) -> web.Response:
+    tg_id = int(request.match_info["tg_id"])
+    u = db.get_user(tg_id)
+    if u is None:
+        raise web.HTTPNotFound(text="Нет такого подписчика")
+    db.mark_read(tg_id)
+    msgs = [msg_json(m) for m in db.thread(tg_id)]
+    title = escape(u["name"] or u["first_name"] or str(tg_id))
+    uname = f" · <a class='btn' href='https://t.me/{escape(u['username'])}' target='_blank'>@{escape(u['username'])}</a>" if u["username"] else ""
+    data = json.dumps(msgs, ensure_ascii=False).replace("<", "\\u003c")
+    body = f"""<p><a class="btn" href="/chats">← Все переписки</a></p>
+    <h2 style="margin-top:0">{title}</h2>
+    <p class="muted">Telegram ID {tg_id}{uname} · зарегистрирован {u['registered_at'] or '—'}</p>
+    <div class="chat" id="chat"></div>
+    <form class="send" id="f"><textarea id="t" placeholder="Сообщение… (Enter — отправить, Shift+Enter — новая строка)" maxlength="4000"></textarea>
+      <button id="b">Отправить</button></form>
+    <p class="flash" id="err" style="display:none"></p>
+    <script>
+    const ID={tg_id}; let last=0; const chat=document.getElementById('chat');
+    function esc(s){{return s.replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}})[c])}}
+    function add(m){{ if(m.id<=last) return; last=m.id;
+      const d=document.createElement('div'); d.className='msg '+m.dir; let h='';
+      if(m.media==='photo'&&m.file) h+='<a href="/chats/file/'+m.id+'" target="_blank"><img src="/chats/file/'+m.id+'" loading="lazy"></a>';
+      else if(m.media) h+=(m.file?'<a href="/chats/file/'+m.id+'" target="_blank">':'')+'['+esc(m.media_label||'')+']'+(m.file?'</a>':'')+(m.text?' ':'');
+      h+=esc(m.text)+'<div class="t">'+esc(m.ts)+'</div>'; d.innerHTML=h;
+      const bottom=chat.scrollHeight-chat.scrollTop-chat.clientHeight<60; chat.appendChild(d); if(bottom) chat.scrollTop=chat.scrollHeight; }}
+    {data}.forEach(add); chat.scrollTop=chat.scrollHeight;
+    if(!last) chat.innerHTML='<p class="muted" id="empty">Переписки ещё нет — напишите первым.</p>';
+    async function poll(){{ try{{ const r=await fetch('/chats/'+ID+'/messages.json?after='+last); if(r.ok){{ const ms=await r.json();
+      if(ms.length) document.getElementById('empty')?.remove(); ms.forEach(add); }} }}catch(e){{}} }}
+    setInterval(poll,4000);
+    const t=document.getElementById('t'), b=document.getElementById('b'), err=document.getElementById('err');
+    t.addEventListener('keydown',e=>{{ if(e.key==='Enter'&&!e.shiftKey){{ e.preventDefault(); document.getElementById('f').requestSubmit(); }} }});
+    document.getElementById('f').addEventListener('submit', async e=>{{ e.preventDefault(); const text=t.value.trim(); if(!text) return;
+      b.disabled=true; err.style.display='none';
+      try{{ const r=await fetch('/chats/'+ID+'/send',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{text}})}});
+        const j=await r.json(); if(!r.ok) throw new Error(j.error||'Ошибка'); t.value=''; document.getElementById('empty')?.remove(); add(j.message);
+      }}catch(x){{ err.textContent='Не отправлено: '+x.message; err.style.display='block'; }} finally{{ b.disabled=false; t.focus(); }} }});
+    </script>"""
+    return page(f"Переписка: {title}", "chats", body)
+
+
+async def chat_messages(request: web.Request) -> web.Response:
+    tg_id = int(request.match_info["tg_id"])
+    after = int(request.query.get("after", "0") or 0)
+    msgs = db.thread(tg_id, after)
+    if any(m["direction"] == "in" for m in msgs):
+        db.mark_read(tg_id)
+    return web.json_response([msg_json(m) for m in msgs])
+
+
+async def chat_send(request: web.Request) -> web.Response:
+    if not same_origin(request):
+        return web.json_response({"error": "Неверный источник запроса"}, status=403)
+    tg_id = int(request.match_info["tg_id"])
+    if db.get_user(tg_id) is None:
+        return web.json_response({"error": "Нет такого подписчика"}, status=404)
+    data = await request.json()
+    text = str(data.get("text", "")).strip()
+    if not text or len(text) > 4000:
+        return web.json_response({"error": "Сообщение пустое или длиннее 4000 символов"}, status=400)
+    try:
+        await request.app["bot"].send_message(tg_id, text)
+    except TelegramForbiddenError:
+        return web.json_response({"error": "подписчик заблокировал бота"}, status=400)
+    except TelegramAPIError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    msg_id = db.add_message(tg_id, "out", text)
+    return web.json_response({"message": msg_json(db.get_message(msg_id))})
+
+
+async def chat_file(request: web.Request) -> web.Response:
+    m = db.get_message(int(request.match_info["msg_id"]))
+    if m is None or not m["file_id"]:
+        raise web.HTTPNotFound()
+    bot = request.app["bot"]
+    try:
+        f = await bot.get_file(m["file_id"])
+        data = await bot.download_file(f.file_path)
+    except TelegramAPIError as e:
+        raise web.HTTPNotFound(text=f"Файл недоступен: {e}")
+    ctype = mimetypes.guess_type(f.file_path or "")[0] or "application/octet-stream"
+    return web.Response(body=data.read(), content_type=ctype, headers={"Cache-Control": "private, max-age=86400"})
+
+
 async def health(request: web.Request) -> web.Response:
     checks = monitor.checks()
     ok = all(c["ok"] for c in checks)
@@ -344,6 +485,11 @@ def create_app(cfg: Config, bot=None) -> web.Application:
     app.router.add_get("/", root)
     app.router.add_get("/admin", admin)
     app.router.add_get("/admin/users.csv", users_csv)
+    app.router.add_get("/chats", chats_page)
+    app.router.add_get(r"/chats/{tg_id:\d+}", chat_page)
+    app.router.add_get(r"/chats/{tg_id:\d+}/messages.json", chat_messages)
+    app.router.add_post(r"/chats/{tg_id:\d+}/send", chat_send)
+    app.router.add_get(r"/chats/file/{msg_id:\d+}", chat_file)
     app.router.add_get("/quizzes", quizzes_page)
     app.router.add_post("/quizzes/start", quiz_start)
     app.router.add_post("/quizzes/stop", quiz_stop)
