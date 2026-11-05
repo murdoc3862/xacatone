@@ -1,6 +1,6 @@
 # Телеграм-бот «Крутой Вебинар»
 
-Статус: **этап 1 — MVP готов, ждёт токен для запуска**.
+Статус: **бот работает на сервере (VPS Timeweb)**.
 
 ## Что умеет
 - `/start` → бот спрашивает имя → сохраняет пользователя в базу
@@ -16,6 +16,13 @@
 
 Вручную: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/python -m bot`
 
+## Выкладка на сервер (через git)
+```
+git add -A && git commit -m "что изменилось"
+SSH_KEY=.secrets/claude_deploy bash deploy/deploy.sh root@IP_СЕРВЕРА
+```
+Скрипт отправит коммиты в GitHub, сервер заберёт их оттуда и перезапустит бота. `.env` и база на сервере не трогаются.
+
 ## Структура
 ```
 bot/__main__.py   запуск: бот + веб-панель в одном процессе
@@ -24,5 +31,6 @@ bot/db.py         база SQLite (data/bot.db): users, events
 bot/web.py        страницы /admin, /status, /health
 bot/monitor.py    проверки здоровья бота
 bot/config.py     настройки из .env
+deploy/           systemd, nginx, установка и выкладка на сервер
 docs/             план, журнал изменений, решения, требования, аналитика
 ```
