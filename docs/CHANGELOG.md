@@ -1,6 +1,7 @@
 # Журнал изменений
 
 ## 2026-11-05 — Git и подготовка к деплою
+- Deploy-ключ добавлен в GitHub с правом записи; push проверен — работает
 - Создан SSH-ключ для деплоя `.secrets/claude_deploy` (ed25519); папка `.secrets/` исключена из git
 - Получен токен бота @xacatone_true_bot, проверен через getMe — работает; записан в `.env` (в git не попадает)
 - Добавлена папка `deploy/`: systemd-сервис, конфиг nginx, `setup_server.sh` (установка на Ubuntu + HTTPS через certbot), `deploy.sh` (выкладка с Mac через rsync)
